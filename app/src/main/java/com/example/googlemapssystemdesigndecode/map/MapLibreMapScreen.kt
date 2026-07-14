@@ -77,6 +77,8 @@ fun MapLibreMapScreen(
     }
 
     val mapLibreMapState = remember { mutableStateOf<MapLibreMap?>(null) }
+    val styleState = remember { mutableStateOf<Style?>(null) }
+    val locationActivated = remember { mutableStateOf(false) }
 
     AndroidView(factory = { mapView }, modifier = modifier.fillMaxSize()) { view ->
         view.getMapAsync { maplibreMap ->
@@ -90,8 +92,21 @@ fun MapLibreMapScreen(
                     .target(LatLng(RouteData.initialCameraTarget.second, RouteData.initialCameraTarget.first))
                     .zoom(CAMERA_ZOOM)
                     .build()
-                if (hasLocationPermission) enableLocationComponent(context, maplibreMap, style)
+                styleState.value = style // triggers the LaunchedEffect below once the style is ready
             }
+        }
+    }
+
+    // Location permission is usually granted (or denied) *after* the style has already
+    // finished loading -- the permission dialog takes real user time, the style fetch
+    // doesn't. Re-checking both whenever either changes avoids losing the location
+    // component just because of that ordering.
+    LaunchedEffect(hasLocationPermission, styleState.value) {
+        val style = styleState.value ?: return@LaunchedEffect
+        val maplibreMap = mapLibreMapState.value ?: return@LaunchedEffect
+        if (hasLocationPermission && !locationActivated.value) {
+            enableLocationComponent(context, maplibreMap, style)
+            locationActivated.value = true
         }
     }
 
