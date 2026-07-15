@@ -1,6 +1,5 @@
 package com.example.googlemapssystemdesigndecode.telemetry
 
-import com.example.googlemapssystemdesigndecode.routing.RouteData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +20,10 @@ import kotlin.random.Random
  * ever re-styles the segment it already has using a fresh `congestion` value. Swap this
  * object's [ensureStarted] body for a real `okhttp3.WebSocketListener` and nothing else
  * in the app (RouteData, the map layer, the HUD) has to change.
+ *
+ * Segment keys aren't known at compile time -- [com.example.googlemapssystemdesigndecode.map.MapLibreMapScreen]
+ * discovers them at runtime by querying real rendered street geometry, then calls
+ * [seedSegments] once they're known.
  */
 object TelemetrySimulator {
 
@@ -28,10 +31,8 @@ object TelemetrySimulator {
     private val started = AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val _congestionBySegment = MutableStateFlow(
-        RouteData.segmentIds.associateWith { 0.15 }, // start mostly clear
-    )
-    val congestionBySegment: StateFlow<Map<Int, Double>> = _congestionBySegment
+    private val _congestionBySegment = MutableStateFlow<Map<String, Double>>(emptyMap())
+    val congestionBySegment: StateFlow<Map<String, Double>> = _congestionBySegment
 
     fun ensureStarted() {
         if (!started.compareAndSet(false, true)) return
@@ -47,5 +48,24 @@ object TelemetrySimulator {
                 }
             }
         }
+    }
+
+    /** Adds any newly-discovered segment keys at a "mostly clear" default -- idempotent, never
+     *  overwrites a key that's already drifting from a previous call. */
+    fun seedSegments(keys: List<String>) {
+        _congestionBySegment.update { current ->
+            val missing = keys.filter { it !in current }
+            if (missing.isEmpty()) current else current + missing.associateWith { 0.15 }
+        }
+    }
+
+    /**
+     * On-demand override for live demos: jumps every segment straight to [value] instead of
+     * waiting on the random walk to drift there. The ticker above keeps running afterward, so
+     * it resumes drifting (from the forced value) on the next tick -- this only front-loads one
+     * state change, it doesn't pause or replace the simulation.
+     */
+    fun forceState(value: Double) {
+        _congestionBySegment.update { current -> current.mapValues { value.coerceIn(0.0, 1.0) } }
     }
 }

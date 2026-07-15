@@ -1,6 +1,8 @@
 package com.example.googlemapssystemdesigndecode.map
 
 import android.graphics.Color
+import android.graphics.RectF
+import android.util.Log
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -31,6 +33,8 @@ import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.LineString
+import kotlin.math.hypot
 
 /** Free, no-API-key, OpenStreetMap-derived vector tiles -- see https://openfreemap.org */
 private const val OPEN_FREE_MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
@@ -38,11 +42,16 @@ private const val ROUTE_SOURCE_ID = "congestion-route-source"
 private const val ROUTE_LAYER_ID = "congestion-route-layer"
 private const val CAMERA_ZOOM = 12.5
 
+// How many of the real, queried street segments to recolor -- capped so the overlay highlights
+// a readable handful of streets rather than every alley in the viewport.
+private const val MAX_REAL_SEGMENTS = 10
+
 /**
  * Hosts a single MapLibre [MapView] inside Compose, wired to:
  *  - [TileTrafficInterceptor] for the network-spike HUD (installed before the first style loads),
- *  - a GeoJSON "routing tile" ([RouteData]) whose segments are recolored every tick from
- *    [TelemetrySimulator] without ever re-fetching geometry,
+ *  - a handful of *real* street segments, queried off the rendered basemap once the style loads
+ *    (see [queryRealRoadSegments]) and recolored every tick from [TelemetrySimulator] without
+ *    ever re-fetching geometry,
  *  - the MapLibre LocationComponent, if the caller has already secured location permission.
  */
 @Composable
@@ -55,8 +64,8 @@ fun MapLibreMapScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val mapView = remember {
-        TileTrafficInterceptor.install() // must run before MapLibre opens its first HTTP connection
         MapLibre.getInstance(context)
+        TileTrafficInterceptor.install() // must run before MapLibre opens its first HTTP connection
         MapView(context)
     }
 
@@ -79,6 +88,7 @@ fun MapLibreMapScreen(
     val mapLibreMapState = remember { mutableStateOf<MapLibreMap?>(null) }
     val styleState = remember { mutableStateOf<Style?>(null) }
     val locationActivated = remember { mutableStateOf(false) }
+    val realSegmentsState = remember { mutableStateOf<List<RouteData.RealSegment>>(emptyList()) }
 
     AndroidView(factory = { mapView }, modifier = modifier.fillMaxSize()) { view ->
         view.getMapAsync { maplibreMap ->
@@ -89,10 +99,26 @@ fun MapLibreMapScreen(
             maplibreMap.setStyle(Style.Builder().fromUri(OPEN_FREE_MAP_STYLE_URL)) { style ->
                 addCongestionRouteLayer(style)
                 maplibreMap.cameraPosition = CameraPosition.Builder()
-                    .target(LatLng(RouteData.initialCameraTarget.second, RouteData.initialCameraTarget.first))
+                    .target(LatLng(RouteData.demoAreaCenter.second, RouteData.demoAreaCenter.first))
                     .zoom(CAMERA_ZOOM)
                     .build()
                 styleState.value = style // triggers the LaunchedEffect below once the style is ready
+
+                // queryRenderedFeatures only sees what's actually on screen, so real street
+                // discovery has to wait for an actual idle render at the new camera position --
+                // not a fixed delay, which is either wastefully long or a race on a slow device.
+                lateinit var idleListener: MapView.OnDidBecomeIdleListener
+                idleListener = MapView.OnDidBecomeIdleListener {
+                    if (realSegmentsState.value.isEmpty()) {
+                        val segments = queryRealRoadSegments(maplibreMap, view.width, view.height)
+                        if (segments.isNotEmpty()) {
+                            realSegmentsState.value = segments
+                            TelemetrySimulator.seedSegments(segments.map { it.key })
+                        }
+                    }
+                    view.removeOnDidBecomeIdleListener(idleListener)
+                }
+                view.addOnDidBecomeIdleListener(idleListener)
             }
         }
     }
@@ -110,20 +136,59 @@ fun MapLibreMapScreen(
         }
     }
 
-    // Live telemetry -> route recoloring. No network call happens here: only the
+    // Live telemetry -> real-street recoloring. No network call happens here: only the
     // `congestion` property on the already-loaded GeoJSON source is rewritten.
     val congestionBySegment by TelemetrySimulator.congestionBySegment.collectAsState()
-    LaunchedEffect(congestionBySegment) {
+    LaunchedEffect(congestionBySegment, realSegmentsState.value) {
         val style = mapLibreMapState.value?.style ?: return@LaunchedEffect
+        val segments = realSegmentsState.value
+        if (segments.isEmpty()) return@LaunchedEffect
         (style.getSource(ROUTE_SOURCE_ID) as? GeoJsonSource)
-            ?.setGeoJson(RouteData.segmentFeatureCollectionJson(congestionBySegment))
+            ?.setGeoJson(RouteData.segmentFeatureCollectionJson(segments, congestionBySegment))
     }
+}
+
+// OpenMapTiles "transportation" layer's `class` values that are actual roads -- excludes
+// waterways (river/canal, also LineStrings in this layer) and rail, which real traffic
+// congestion doesn't apply to.
+private val ROAD_CLASSES = setOf("motorway", "trunk", "primary", "secondary", "tertiary", "minor")
+
+/**
+ * Finds real street geometry to recolor by querying whatever's *actually rendered* in the
+ * current viewport -- these are the same [org.maplibre.geojson.Feature] objects, with the same
+ * coordinates, that OpenFreeMap's vector tiles describe. Longest segments first, capped at
+ * [MAX_REAL_SEGMENTS], so the overlay highlights a few readable streets rather than every alley
+ * fragment in view.
+ */
+private fun queryRealRoadSegments(maplibreMap: MapLibreMap, viewWidth: Int, viewHeight: Int): List<RouteData.RealSegment> {
+    val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+    val segments = maplibreMap.queryRenderedFeatures(viewRect)
+        .mapNotNull { feature -> (feature.geometry() as? LineString)?.let { line -> line to feature.getStringProperty("class") } }
+        .filter { (_, roadClass) -> roadClass in ROAD_CLASSES }
+        .map { (line, roadClass) -> line.coordinates().map { it.longitude() to it.latitude() } to roadClass }
+        .distinctBy { it.first } // tile buffering can return the same feature from two adjacent tiles
+        .sortedByDescending { (coordinates, _) -> pathLength(coordinates) }
+        .take(MAX_REAL_SEGMENTS)
+        .mapIndexed { index, (coordinates, roadClass) -> RouteData.RealSegment("seg-$index", coordinates, roadClass) }
+    Log.d("RealRoadQuery", "found ${segments.size} real road segments: ${segments.map { it.roadClass }}")
+    return segments
+}
+
+private fun pathLength(coordinates: List<Pair<Double, Double>>): Double {
+    var total = 0.0
+    for (i in 0 until coordinates.size - 1) {
+        val (x1, y1) = coordinates[i]
+        val (x2, y2) = coordinates[i + 1]
+        total += hypot(x2 - x1, y2 - y1)
+    }
+    return total
 }
 
 private fun addCongestionRouteLayer(style: Style) {
     val source = GeoJsonSource(
         ROUTE_SOURCE_ID,
-        RouteData.segmentFeatureCollectionJson(emptyMap()), // starts clear; first telemetry tick recolors it
+        // Starts empty; populated once queryRealRoadSegments() finds real streets to recolor.
+        RouteData.segmentFeatureCollectionJson(emptyList(), emptyMap()),
     )
     style.addSource(source)
 
@@ -145,15 +210,17 @@ private fun addCongestionRouteLayer(style: Style) {
 }
 
 private fun enableLocationComponent(context: android.content.Context, maplibreMap: MapLibreMap, style: Style) {
-    val locationComponent = maplibreMap.locationComponent
-    val options = LocationComponentOptions.builder(context)
-        .pulseEnabled(true)
-        .build()
-    val activationOptions = LocationComponentActivationOptions
-        .builder(context, style)
-        .locationComponentOptions(options)
-        .useDefaultLocationEngine(true)
-        .build()
-    locationComponent.activateLocationComponent(activationOptions)
-    locationComponent.isLocationComponentEnabled = true
+    runCatching {
+        val locationComponent = maplibreMap.locationComponent
+        val options = LocationComponentOptions.builder(context)
+            .pulseEnabled(true)
+            .build()
+        val activationOptions = LocationComponentActivationOptions
+            .builder(context, style)
+            .locationComponentOptions(options)
+            .useDefaultLocationEngine(true)
+            .build()
+        locationComponent.activateLocationComponent(activationOptions)
+        locationComponent.isLocationComponentEnabled = true
+    }
 }

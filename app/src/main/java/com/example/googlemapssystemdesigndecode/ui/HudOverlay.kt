@@ -3,6 +3,7 @@ package com.example.googlemapssystemdesigndecode.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,18 +24,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.googlemapssystemdesigndecode.network.TrafficMonitor
 import com.example.googlemapssystemdesigndecode.protobuf.MvtWireDecoder
 import com.example.googlemapssystemdesigndecode.routing.RouteData
+import com.example.googlemapssystemdesigndecode.telemetry.TelemetrySimulator
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 
 private const val RESET_ZOOM = 12.5
-private val OSAKA_CASTLE = LatLng(34.6873, 135.5259) // ~40km + several zoom levels away
 
-/** Full HUD: network spike graph, live protobuf inspector, telemetry legend, camera demo buttons. */
+/** Full HUD: network spike graph, live protobuf inspector, telemetry legend, camera reset. */
 @Composable
 fun MapDemoHud(maplibreMap: MapLibreMap?, modifier: Modifier = Modifier) {
     Column(
@@ -78,6 +80,13 @@ private fun NetworkSpikeCard(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                "Rough estimate (flat 90KB/tile average) -- vector tiles can exceed this at " +
+                    "low zoom in dense areas. The real savings: no re-fetch on restyle, " +
+                    "rotate, or retina density.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -117,39 +126,31 @@ private fun Sparkline(history: List<Long>, spiking: Boolean, modifier: Modifier 
 @Composable
 private fun CameraDemoControls(maplibreMap: MapLibreMap?, modifier: Modifier = Modifier) {
     Card(modifier = modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Try it", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { maplibreMap?.let(::flyToOsaka) }) {
-                    Text("Big jump → spike")
-                }
-                Button(onClick = { maplibreMap?.let(::nudge) }) {
-                    Text("Tiny pan → no spike")
-                }
-                Button(onClick = { maplibreMap?.let(::resetToCampus) }) {
-                    Text("Reset")
-                }
-            }
+        Column(Modifier.padding(12.dp)) {
+            DemoButton("Reset view", Modifier.fillMaxWidth()) { maplibreMap?.let(::resetToCampus) }
         }
     }
 }
 
-private fun flyToOsaka(map: MapLibreMap) {
-    map.animateCamera(CameraUpdateFactory.newLatLngZoom(OSAKA_CASTLE, 15.0), 800)
-}
-
-private fun nudge(map: MapLibreMap) {
-    val current = map.cameraPosition.target ?: return
-    map.animateCamera(
-        CameraUpdateFactory.newLatLng(LatLng(current.latitude + 0.0008, current.longitude + 0.0008)),
-        400,
-    )
+@Composable
+private fun DemoButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 private fun resetToCampus(map: MapLibreMap) {
     map.animateCamera(
         CameraUpdateFactory.newLatLngZoom(
-            LatLng(RouteData.initialCameraTarget.second, RouteData.initialCameraTarget.first),
+            LatLng(RouteData.demoAreaCenter.second, RouteData.demoAreaCenter.first),
             RESET_ZOOM,
         ),
         800,
@@ -200,18 +201,19 @@ private fun TileSummary(tile: MvtWireDecoder.DecodedTile) {
 private fun TelemetryLegendCard(modifier: Modifier = Modifier) {
     Card(modifier = modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Live traffic (simulated push)", style = MaterialTheme.typography.titleSmall)
+            Text("Live traffic", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 LegendDot(Color(0xFF2ECC71), "clear")
                 LegendDot(Color(0xFFF1C40F), "moderate")
                 LegendDot(Color(0xFFE74C3C), "jammed")
             }
-            Text(
-                "Recolors route segments only -- no geometry re-fetch, same idea as a " +
-                    "server → client WebSocket push over a static routing tile.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                DemoButton("Traffic jam", Modifier.weight(1f)) { TelemetrySimulator.forceState(0.95) }
+                DemoButton("Clear jam", Modifier.weight(1f)) { TelemetrySimulator.forceState(0.05) }
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.example.googlemapssystemdesigndecode.network
 
+import android.util.Log
 import com.example.googlemapssystemdesigndecode.protobuf.MvtWireDecoder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -89,6 +90,7 @@ object TrafficMonitor {
             scope.launch {
                 runCatching { MvtWireDecoder.decode(rawTileBytes) }
                     .onSuccess { _lastDecodedTile.value = it }
+                    .onFailure { Log.w("MvtWireDecoder", "decode failed: ${it.javaClass.simpleName}: ${it.message}") }
             }
         }
     }
