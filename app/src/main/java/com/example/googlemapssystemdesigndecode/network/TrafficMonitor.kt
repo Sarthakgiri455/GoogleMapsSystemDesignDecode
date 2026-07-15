@@ -30,6 +30,14 @@ object TrafficMonitor {
     private const val HISTORY_SIZE = 60 // 60 * 250ms = 15s rolling window
     private const val SPIKE_THRESHOLD_BYTES_PER_SEC = 60_000L // tune to taste
 
+    // Real tile bursts finish in well under a second, so the raw detector below (based on
+    // only the last 500ms of traffic) flips back to "steady" almost immediately -- too fast
+    // to see, let alone screenshot. This holds the visible SPIKE state for a few seconds after
+    // the last moment the threshold was actually exceeded, like peak-hold on a VU meter --
+    // detection stays instantaneous, only the display lingers.
+    private const val SPIKE_HOLD_MS = 3_000L
+    private var lastSpikeAtMs = 0L
+
     data class SessionStats(
         val tilesFetched: Int = 0,
         val vectorBytesTotal: Long = 0L,
@@ -64,7 +72,10 @@ object TrafficMonitor {
                 val bytesThisBucket = pendingBytesThisBucket.getAndSet(0L)
                 _throughputHistory.update { history -> (history.drop(1) + bytesThisBucket) }
                 val lastTwoBuckets = _throughputHistory.value.takeLast(2).sum()
-                _isSpiking.value = (lastTwoBuckets * (1000L / BUCKET_MS) / 2) > SPIKE_THRESHOLD_BYTES_PER_SEC
+                val ratePerSec = lastTwoBuckets * (1000L / BUCKET_MS) / 2
+                val now = System.currentTimeMillis()
+                if (ratePerSec > SPIKE_THRESHOLD_BYTES_PER_SEC) lastSpikeAtMs = now
+                _isSpiking.value = (now - lastSpikeAtMs) < SPIKE_HOLD_MS
             }
         }
     }
@@ -94,13 +105,4 @@ object TrafficMonitor {
             }
         }
     }
-
-    /** Rough estimate of what the same viewport would have cost as raster PNG tiles.
-     * We deliberately do NOT fetch a real raster tile server here: embedding tile.openstreetmap.org
-     * in a public demo repo that others will clone and run violates its tile usage policy
-     * (see https://operations.osmfoundation.org/policies/tiles/). Instead we multiply the
-     * measured vector tile count by a cited average raster tile size -- see README for the source.
-     */
-    fun estimatedRasterEquivalentBytes(avgRasterTileBytes: Int = 90_000): Long =
-        _stats.value.tilesFetched.toLong() * avgRasterTileBytes
 }

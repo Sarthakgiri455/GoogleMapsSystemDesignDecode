@@ -18,7 +18,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.geometry.Offset
@@ -27,7 +26,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.googlemapssystemdesigndecode.network.TrafficMonitor
-import com.example.googlemapssystemdesigndecode.protobuf.MvtWireDecoder
 import com.example.googlemapssystemdesigndecode.routing.RouteData
 import com.example.googlemapssystemdesigndecode.telemetry.TelemetrySimulator
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -36,7 +34,7 @@ import org.maplibre.android.maps.MapLibreMap
 
 private const val RESET_ZOOM = 12.5
 
-/** Full HUD: network spike graph, live protobuf inspector, telemetry legend, camera reset. */
+/** Full HUD: network spike graph, telemetry legend, camera reset. */
 @Composable
 fun MapDemoHud(maplibreMap: MapLibreMap?, modifier: Modifier = Modifier) {
     Column(
@@ -45,7 +43,6 @@ fun MapDemoHud(maplibreMap: MapLibreMap?, modifier: Modifier = Modifier) {
     ) {
         NetworkSpikeCard()
         CameraDemoControls(maplibreMap)
-        ProtobufInspectorCard()
         TelemetryLegendCard()
     }
 }
@@ -55,7 +52,6 @@ private fun NetworkSpikeCard(modifier: Modifier = Modifier) {
     val history by TrafficMonitor.throughputHistory.collectAsState()
     val stats by TrafficMonitor.stats.collectAsState()
     val spiking by TrafficMonitor.isSpiking.collectAsState()
-    val estimatedRasterBytes = remember(stats.tilesFetched) { TrafficMonitor.estimatedRasterEquivalentBytes() }
 
     Card(modifier = modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
@@ -74,18 +70,6 @@ private fun NetworkSpikeCard(modifier: Modifier = Modifier) {
             Text(
                 "${stats.tilesFetched} vector tiles measured · ${formatBytes(stats.vectorBytesTotal)}",
                 style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "raster-PNG equivalent (estimated): ${formatBytes(estimatedRasterBytes)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "Rough estimate (flat 90KB/tile average) -- vector tiles can exceed this at " +
-                    "low zoom in dense areas. The real savings: no re-fetch on restyle, " +
-                    "rotate, or retina density.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -155,46 +139,6 @@ private fun resetToCampus(map: MapLibreMap) {
         ),
         800,
     )
-}
-
-@Composable
-private fun ProtobufInspectorCard(modifier: Modifier = Modifier) {
-    val tile by TrafficMonitor.lastDecodedTile.collectAsState()
-    Card(modifier = modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Last tile decoded off the wire", style = MaterialTheme.typography.titleSmall)
-            if (tile == null) {
-                Text(
-                    "Pan or zoom to trigger a tile fetch…",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else {
-                TileSummary(tile!!)
-            }
-        }
-    }
-}
-
-@Composable
-private fun TileSummary(tile: MvtWireDecoder.DecodedTile) {
-    Text(
-        "${tile.byteSize} bytes → ${tile.layers.size} layers",
-        style = MaterialTheme.typography.bodySmall,
-    )
-    tile.layers.take(5).forEach { layer ->
-        Text(
-            "• ${layer.name}: ${layer.features.size} features, extent=${layer.extent}",
-            style = MaterialTheme.typography.bodySmall,
-        )
-    }
-    val sample = tile.layers.firstOrNull { it.features.isNotEmpty() }?.features?.firstOrNull()
-    if (sample != null) {
-        Text(
-            "sample feature: id=${sample.id} type=${sample.geomType} attrs=${sample.attributes}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
 }
 
 @Composable
