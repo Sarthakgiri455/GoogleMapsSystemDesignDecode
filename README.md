@@ -9,7 +9,7 @@ or data involved.
 
 1. Open in Android Studio, let Gradle sync, run on a device/emulator.
 2. Grant the location permission prompt if it appears (optional).
-3. Pan and zoom the map — watch the network HUD and the decoded-tile panel below it update live.
+3. Slide and zoom the map — watch the network HUD and the decoded-tile panel below it update live.
 4. Tap **Traffic jam** / **Clear jam** to force the live-traffic overlay, or leave it alone — it updates on its own every 2 seconds.
 5. Tap **Reset view** to jump back to the starting location.
 
